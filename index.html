@@ -15,9 +15,24 @@
     <script type="text/babel">
       const { useEffect, useMemo, useRef, useState } = React;
 
-      const STORAGE_KEY = "vacation-calendar-planner-v2";
-      const LEGACY_STORAGE_KEY = "vacation-calendar-planner-v1";
+      const STORAGE_KEY = "vacation-calendar-planner-v3";
+      const LEGACY_STORAGE_KEYS = [
+        "vacation-calendar-planner-v2",
+        "vacation-calendar-planner-v1",
+      ];
       const BACKUP_FILE_PREFIX = "vacation-planner";
+
+      const DAY_TYPES = {
+        VACATION_FULL: "Vacation Full Day",
+        VACATION_HALF: "Vacation Half Day",
+        BIRTHDAY: "Birthday Day",
+        BONUS: "Bonus Day",
+      };
+
+      const STATUSES = {
+        PLANNED: "Planned",
+        CONFIRMED: "Confirmed",
+      };
 
       const MONTH_NAMES = [
         "January", "February", "March", "April", "May", "June",
@@ -64,6 +79,11 @@
       function toSafeNumber(value) {
         const n = Number(value);
         return Number.isFinite(n) ? n : 0;
+      }
+
+      function clampNumber(value, min, max) {
+        const safeValue = toSafeNumber(value);
+        return Math.min(Math.max(safeValue, min), max);
       }
 
       function isPlainObject(value) {
@@ -137,10 +157,10 @@
         if (!isPlainObject(input)) return defaults;
 
         return {
-          baseDays: toSafeNumber(input.baseDays),
-          birthdayDays: toSafeNumber(input.birthdayDays),
-          bonusDays: toSafeNumber(input.bonusDays),
-          carryOverDays: toSafeNumber(input.carryOverDays),
+          baseDays: Math.max(0, toSafeNumber(input.baseDays)),
+          birthdayDays: clampNumber(input.birthdayDays, 0, 1),
+          bonusDays: Math.max(0, toSafeNumber(input.bonusDays)),
+          carryOverDays: Math.max(0, toSafeNumber(input.carryOverDays)),
         };
       }
 
@@ -154,8 +174,15 @@
           excludeWeekends: true,
           excludePortugalHolidays: false,
           selectedDates: {},
+          selectedDayType: DAY_TYPES.VACATION_FULL,
+          selectedStatus: STATUSES.PLANNED,
           lastSavedAt: null,
         };
+      }
+
+      function getDayAmount(dayType) {
+        if (dayType === DAY_TYPES.VACATION_HALF) return 0.5;
+        return 1;
       }
 
       function normalizeSelectedDates(selectedDates) {
@@ -163,9 +190,24 @@
 
         return Object.keys(selectedDates).reduce((acc, dateKey) => {
           if (!isValidDateKey(dateKey)) return acc;
+
+          const input = selectedDates[dateKey] || {};
+          const rawType = input.type || DAY_TYPES.VACATION_FULL;
+          const migratedType = rawType === "Vacation" ? DAY_TYPES.VACATION_FULL : rawType;
+          const validType = Object.values(DAY_TYPES).includes(migratedType)
+            ? migratedType
+            : DAY_TYPES.VACATION_FULL;
+          const rawStatus = input.status || STATUSES.PLANNED;
+          const validStatus = Object.values(STATUSES).includes(rawStatus)
+            ? rawStatus
+            : STATUSES.PLANNED;
+
           acc[dateKey] = {
-            type: selectedDates[dateKey]?.type || "Vacation",
+            type: validType,
+            amount: getDayAmount(validType),
+            status: validStatus,
           };
+
           return acc;
         }, {});
       }
@@ -203,6 +245,8 @@
         if (!isPlainObject(input)) return defaults;
 
         const normalizedYear = toSafeNumber(input.year) || defaults.year;
+        const rawSelectedDayType = input.selectedDayType || defaults.selectedDayType;
+        const rawSelectedStatus = input.selectedStatus || defaults.selectedStatus;
 
         return {
           ...defaults,
@@ -215,6 +259,12 @@
               ? input.excludePortugalHolidays
               : defaults.excludePortugalHolidays,
           selectedDates: normalizeSelectedDates(input.selectedDates),
+          selectedDayType: Object.values(DAY_TYPES).includes(rawSelectedDayType)
+            ? rawSelectedDayType
+            : defaults.selectedDayType,
+          selectedStatus: Object.values(STATUSES).includes(rawSelectedStatus)
+            ? rawSelectedStatus
+            : defaults.selectedStatus,
           lastSavedAt: input.lastSavedAt || null,
         };
       }
@@ -223,7 +273,7 @@
         try {
           const rawValue =
             window.localStorage.getItem(STORAGE_KEY) ||
-            window.localStorage.getItem(LEGACY_STORAGE_KEY);
+            LEGACY_STORAGE_KEYS.map((key) => window.localStorage.getItem(key)).find(Boolean);
 
           if (!rawValue) return getDefaultPlannerState();
           return normalizePlannerState(JSON.parse(rawValue));
@@ -250,7 +300,7 @@
       function clearSavedPlannerState() {
         try {
           window.localStorage.removeItem(STORAGE_KEY);
-          window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+          LEGACY_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
         } catch (error) {
           console.warn("Could not clear saved vacation planner state:", error);
         }
@@ -259,7 +309,7 @@
       function createExportPayload(state) {
         return {
           app: "Vacation Control Calendar",
-          version: 2,
+          version: 3,
           exportedAt: new Date().toISOString(),
           plannerState: normalizePlannerState(state),
         };
@@ -295,6 +345,46 @@
         return nextSelectedDates;
       }
 
+      function getYearFromDateKey(dateKey) {
+        return Number(dateKey.slice(0, 4));
+      }
+
+      function formatAmount(value) {
+        return Number.isInteger(value) ? String(value) : value.toFixed(1);
+      }
+
+      function getTypeShortLabel(type) {
+        if (type === DAY_TYPES.VACATION_HALF) return "½";
+        if (type === DAY_TYPES.BIRTHDAY) return "B";
+        if (type === DAY_TYPES.BONUS) return "+";
+        return "";
+      }
+
+      function getTypeListLabel(type) {
+        if (type === DAY_TYPES.VACATION_FULL) return "Vacation full day";
+        if (type === DAY_TYPES.VACATION_HALF) return "Vacation half day";
+        if (type === DAY_TYPES.BIRTHDAY) return "Birthday day";
+        if (type === DAY_TYPES.BONUS) return "Bonus day";
+        return type;
+      }
+
+      function getColorClassForSelectedDay(dayEntry) {
+        if (dayEntry.type === DAY_TYPES.BIRTHDAY) {
+          return "bg-purple-600 text-white shadow-sm hover:bg-purple-700";
+        }
+        if (dayEntry.type === DAY_TYPES.BONUS) {
+          return "bg-emerald-600 text-white shadow-sm hover:bg-emerald-700";
+        }
+        if (dayEntry.type === DAY_TYPES.VACATION_HALF) {
+          return dayEntry.status === STATUSES.CONFIRMED
+            ? "bg-cyan-700 text-white shadow-sm hover:bg-cyan-800"
+            : "bg-cyan-500 text-white shadow-sm hover:bg-cyan-600";
+        }
+        return dayEntry.status === STATUSES.CONFIRMED
+          ? "bg-blue-800 text-white shadow-sm hover:bg-blue-900"
+          : "bg-blue-600 text-white shadow-sm hover:bg-blue-700";
+      }
+
       function Panel({ children, className = "" }) {
         return (
           <div className={`rounded-3xl border border-slate-200 bg-white shadow-sm ${className}`}>
@@ -309,6 +399,7 @@
           blue: { badge: "bg-blue-100 text-blue-700", value: "text-slate-900" },
           green: { badge: "bg-emerald-100 text-emerald-700", value: "text-emerald-700" },
           red: { badge: "bg-red-100 text-red-700", value: "text-red-600" },
+          purple: { badge: "bg-purple-100 text-purple-700", value: "text-purple-700" },
         };
         const styles = toneMap[tone] || toneMap.default;
 
@@ -328,18 +419,42 @@
         );
       }
 
-      function AllowanceInput({ label, value, onChange }) {
+      function AllowanceInput({ label, value, onChange, min = 0, max }) {
         return (
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-slate-700">{label}</span>
             <input
               type="number"
-              min="0"
+              min={min}
+              max={max}
               value={value}
               onChange={onChange}
               className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100"
             />
           </label>
+        );
+      }
+
+      function ChoiceButton({ active, onClick, children, color = "slate" }) {
+        const activeClasses = {
+          slate: "bg-slate-900 text-white border-slate-900",
+          blue: "bg-blue-600 text-white border-blue-600",
+          cyan: "bg-cyan-600 text-white border-cyan-600",
+          purple: "bg-purple-600 text-white border-purple-600",
+          emerald: "bg-emerald-600 text-white border-emerald-600",
+        };
+
+        return (
+          <button
+            onClick={onClick}
+            className={`rounded-2xl border px-4 py-3 text-left text-sm font-medium transition ${
+              active
+                ? activeClasses[color]
+                : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+            }`}
+          >
+            {children}
+          </button>
         );
       }
 
@@ -369,11 +484,11 @@
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
                   <h3 className="text-lg font-semibold">{monthName}</h3>
-                  <p className="text-xs text-slate-500">{selectedCount} vacation day(s)</p>
+                  <p className="text-xs text-slate-500">{formatAmount(selectedCount)} day(s)</p>
                 </div>
                 {selectedCount > 0 ? (
                   <div className="rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-800">
-                    {selectedCount} selected
+                    {formatAmount(selectedCount)} selected
                   </div>
                 ) : null}
               </div>
@@ -389,7 +504,8 @@
                   if (!date) return <div key={`empty-${index}`} className="aspect-square" />;
 
                   const key = formatDateKey(date);
-                  const selected = Boolean(selectedDates[key]);
+                  const selectedEntry = selectedDates[key];
+                  const selected = Boolean(selectedEntry);
                   const weekend = isWeekend(date);
                   const holidayName = portugalHolidays[key];
                   const disabledByWeekend = excludeWeekends && weekend;
@@ -401,7 +517,7 @@
                   if (disabledByHoliday) {
                     className += "cursor-not-allowed bg-amber-100 text-amber-800 ring-1 ring-amber-200";
                   } else if (selected) {
-                    className += "bg-blue-600 text-white shadow-sm hover:bg-blue-700";
+                    className += getColorClassForSelectedDay(selectedEntry);
                   } else if (disabledByWeekend) {
                     className += "cursor-not-allowed bg-slate-100 text-slate-300";
                   } else if (weekend) {
@@ -425,14 +541,19 @@
                             : disabledByWeekend
                               ? "Weekend excluded"
                               : selected
-                                ? "Click to remove vacation"
-                                : "Click to add vacation"
+                                ? `${getTypeListLabel(selectedEntry.type)} · ${selectedEntry.status} · Click to remove`
+                                : "Click to add selected day type"
                       }
                       className={className}
                     >
                       {date.getDate()}
                       {holidayName ? (
                         <span className="absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-amber-500" />
+                      ) : null}
+                      {selectedEntry ? (
+                        <span className="absolute right-1 top-0.5 text-[10px] font-bold">
+                          {getTypeShortLabel(selectedEntry.type)}
+                        </span>
                       ) : null}
                     </button>
                   );
@@ -455,6 +576,8 @@
           excludeWeekends,
           excludePortugalHolidays,
           selectedDates,
+          selectedDayType,
+          selectedStatus,
           lastSavedAt,
         } = plannerState;
 
@@ -466,16 +589,24 @@
           savePlannerState(plannerState);
         }, [plannerState]);
 
+        function updatePlannerState(partialState) {
+          setPlannerState((previous) => ({ ...previous, ...partialState }));
+        }
+
         function updateYearSettings(fieldName, value) {
           setPlannerState((previous) => {
             const currentSettings = getSettingsForYear(previous, previous.year);
+            const normalizedValue = fieldName === "birthdayDays"
+              ? clampNumber(value, 0, 1)
+              : Math.max(0, toSafeNumber(value));
+
             return {
               ...previous,
               yearSettings: {
                 ...previous.yearSettings,
                 [previous.year]: {
                   ...currentSettings,
-                  [fieldName]: value,
+                  [fieldName]: normalizedValue,
                 },
               },
             };
@@ -495,40 +626,76 @@
           return Object.keys(selectedDates)
             .filter((dateKey) => dateKey.startsWith(`${year}-`))
             .filter((dateKey) =>
-              !isBlockedDate(dateKey, {
-                excludeWeekends,
-                excludePortugalHolidays,
-                portugalHolidays,
-              })
+              !isBlockedDate(dateKey, { excludeWeekends, excludePortugalHolidays, portugalHolidays })
             )
             .sort();
         }, [selectedDates, year, excludeWeekends, excludePortugalHolidays, portugalHolidays]);
 
-        const daysUsed = selectedDateList.length;
+        const daysUsed = useMemo(() => {
+          return selectedDateList.reduce((sum, dateKey) => {
+            return sum + toSafeNumber(selectedDates[dateKey]?.amount || 1);
+          }, 0);
+        }, [selectedDateList, selectedDates]);
+
+        const birthdayUsed = useMemo(() => {
+          return selectedDateList.some((dateKey) => selectedDates[dateKey]?.type === DAY_TYPES.BIRTHDAY) ? 1 : 0;
+        }, [selectedDateList, selectedDates]);
+
         const remainingDays = totalAvailable - daysUsed;
 
         const vacationByMonth = useMemo(() => {
           return selectedDateList.reduce((acc, dateKey) => {
             const month = Number(dateKey.slice(5, 7)) - 1;
-            acc[month] = (acc[month] || 0) + 1;
+            acc[month] = (acc[month] || 0) + toSafeNumber(selectedDates[dateKey]?.amount || 1);
             return acc;
           }, {});
-        }, [selectedDateList]);
+        }, [selectedDateList, selectedDates]);
+
+        const monthlySummary = useMemo(() => {
+          return MONTH_NAMES.map((monthName, monthIndex) => ({
+            monthName,
+            amount: vacationByMonth[monthIndex] || 0,
+          })).filter((row) => row.amount > 0);
+        }, [vacationByMonth]);
+
+        const yearlyTypeSummary = useMemo(() => {
+          return selectedDateList.reduce((acc, dateKey) => {
+            const entry = selectedDates[dateKey];
+            if (!entry) return acc;
+            acc[entry.type] = (acc[entry.type] || 0) + toSafeNumber(entry.amount || 1);
+            return acc;
+          }, {});
+        }, [selectedDateList, selectedDates]);
 
         function toggleDate(date) {
           const key = formatDateKey(date);
-          if (
-            isBlockedDate(key, {
-              excludeWeekends,
-              excludePortugalHolidays,
-              portugalHolidays,
-            })
-          ) return;
+          if (isBlockedDate(key, { excludeWeekends, excludePortugalHolidays, portugalHolidays })) return;
 
           setPlannerState((previous) => {
             const nextSelectedDates = { ...previous.selectedDates };
-            if (nextSelectedDates[key]) delete nextSelectedDates[key];
-            else nextSelectedDates[key] = { type: "Vacation" };
+
+            if (nextSelectedDates[key]) {
+              delete nextSelectedDates[key];
+              return { ...previous, selectedDates: nextSelectedDates };
+            }
+
+            if (previous.selectedDayType === DAY_TYPES.BIRTHDAY) {
+              Object.keys(nextSelectedDates).forEach((dateKey) => {
+                if (
+                  dateKey.startsWith(`${previous.year}-`) &&
+                  nextSelectedDates[dateKey]?.type === DAY_TYPES.BIRTHDAY
+                ) {
+                  delete nextSelectedDates[dateKey];
+                }
+              });
+            }
+
+            nextSelectedDates[key] = {
+              type: previous.selectedDayType,
+              amount: getDayAmount(previous.selectedDayType),
+              status: previous.selectedStatus,
+            };
+
             return { ...previous, selectedDates: nextSelectedDates };
           });
         }
@@ -594,10 +761,7 @@
         function resetCurrentYearAllowance() {
           setPlannerState((previous) => ({
             ...previous,
-            yearSettings: {
-              ...previous.yearSettings,
-              [previous.year]: getDefaultYearSettings(),
-            },
+            yearSettings: { ...previous.yearSettings, [previous.year]: getDefaultYearSettings() },
           }));
         }
 
@@ -617,10 +781,7 @@
         }
 
         function handleNumericInput(fieldName) {
-          return (event) => {
-            const value = event.target.value;
-            updateYearSettings(fieldName, value === "" ? 0 : Number(value));
-          };
+          return (event) => updateYearSettings(fieldName, event.target.value === "" ? 0 : Number(event.target.value));
         }
 
         function exportPlannerJson() {
@@ -629,7 +790,7 @@
           const preparedExport = createJsonExport(filename, payload);
           setExportBackup(preparedExport);
           setImportExportMessage(
-            `Full backup prepared: ${filename}. This includes selected dates and allowance settings for all saved years. If downloads are blocked, select the JSON text and copy it manually.`
+            `Full backup prepared: ${filename}. This includes selected dates, day types, statuses and allowance settings for all saved years. If downloads are blocked, select the JSON text and copy it manually.`
           );
         }
 
@@ -683,29 +844,20 @@
                       <span role="img" aria-label="calendar">📅</span>
                       Interactive annual planner
                     </div>
-                    <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">
-                      Vacation Control Calendar
-                    </h1>
+                    <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">Vacation Control Calendar</h1>
                     <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300 md:text-base">
-                      Select planned vacation days directly on the calendar and instantly see how many days are used and how many remain from your yearly allowance.
+                      Select planned vacation days directly on the calendar, classify them by type and status, and instantly see the impact on your yearly balance.
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <p className="inline-flex rounded-full bg-emerald-400/10 px-3 py-1 text-xs font-medium text-emerald-200 ring-1 ring-emerald-300/20">
-                        Auto-save enabled · stored locally in this browser
-                      </p>
-                      <p className="inline-flex rounded-full bg-blue-400/10 px-3 py-1 text-xs font-medium text-blue-200 ring-1 ring-blue-300/20">
-                        Full JSON backup · all years included
-                      </p>
-                      <p className="inline-flex rounded-full bg-amber-400/10 px-3 py-1 text-xs font-medium text-amber-200 ring-1 ring-amber-300/20">
-                        Portugal national holidays available
-                      </p>
+                      <p className="inline-flex rounded-full bg-emerald-400/10 px-3 py-1 text-xs font-medium text-emerald-200 ring-1 ring-emerald-300/20">Auto-save enabled</p>
+                      <p className="inline-flex rounded-full bg-blue-400/10 px-3 py-1 text-xs font-medium text-blue-200 ring-1 ring-blue-300/20">Full JSON backup</p>
+                      <p className="inline-flex rounded-full bg-purple-400/10 px-3 py-1 text-xs font-medium text-purple-200 ring-1 ring-purple-300/20">Birthday locked to 1 day</p>
+                      <p className="inline-flex rounded-full bg-amber-400/10 px-3 py-1 text-xs font-medium text-amber-200 ring-1 ring-amber-300/20">Portugal holidays available</p>
                     </div>
                   </div>
 
                   <div className="rounded-2xl bg-white/10 p-4 ring-1 ring-white/15 backdrop-blur">
-                    <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-slate-300">
-                      Planning year
-                    </label>
+                    <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-slate-300">Planning year</label>
                     <input
                       type="number"
                       value={year}
@@ -717,19 +869,19 @@
               </header>
 
               <section className="grid gap-4 md:grid-cols-4">
-                <StatCard label="Total available" value={totalAvailable} icon="➕" tone="default" subtext={`Allowance for ${year}`} />
-                <StatCard label="Scheduled vacation" value={daysUsed} icon="✈️" tone="blue" subtext={`Counted days in ${year}`} />
-                <StatCard label="Remaining" value={remainingDays} icon="🎁" tone={balanceTone} subtext={`Balance for ${year}`} />
+                <StatCard label="Total available" value={formatAmount(totalAvailable)} icon="➕" tone="default" subtext={`Allowance for ${year}`} />
+                <StatCard label="Scheduled" value={formatAmount(daysUsed)} icon="✈️" tone="blue" subtext={`Counted days in ${year}`} />
+                <StatCard label="Remaining" value={formatAmount(remainingDays)} icon="🎁" tone={balanceTone} subtext={`Balance for ${year}`} />
                 <StatCard
-                  label="Balance status"
-                  value={remainingDays < 0 ? "Over planned" : "Within allowance"}
-                  subtext={remainingDays < 0 ? `${Math.abs(remainingDays)} day(s) above your allowance.` : `${remainingDays} day(s) still available.`}
-                  icon={remainingDays < 0 ? "⚠️" : "✅"}
-                  tone={remainingDays < 0 ? "red" : "green"}
+                  label="Birthday used"
+                  value={`${birthdayUsed}/${birthdayDays}`}
+                  icon="🎂"
+                  tone="purple"
+                  subtext={birthdayUsed ? "Birthday date selected" : "No birthday date selected"}
                 />
               </section>
 
-              <section className="grid gap-6 lg:grid-cols-[340px_1fr]">
+              <section className="grid gap-6 lg:grid-cols-[360px_1fr]">
                 <aside className="space-y-6">
                   <Panel>
                     <div className="space-y-4 p-5">
@@ -739,7 +891,7 @@
                       </div>
                       <div className="space-y-3">
                         <AllowanceInput label="Base vacation days" value={baseDays} onChange={handleNumericInput("baseDays")} />
-                        <AllowanceInput label="Birthday day" value={birthdayDays} onChange={handleNumericInput("birthdayDays")} />
+                        <AllowanceInput label="Birthday day" value={birthdayDays} max={1} onChange={handleNumericInput("birthdayDays")} />
                         <AllowanceInput label="Bonus days" value={bonusDays} onChange={handleNumericInput("bonusDays")} />
                         <AllowanceInput label="Carry-over from last year" value={carryOverDays} onChange={handleNumericInput("carryOverDays")} />
                       </div>
@@ -748,15 +900,30 @@
                           <span className="mt-0.5 text-lg">ℹ️</span>
                           <div>
                             <p className="text-sm font-medium">Current setup for {year}</p>
-                            <p className="mt-1 text-sm text-slate-600">
-                              {baseDays} base + {birthdayDays} birthday + {bonusDays} bonus + {carryOverDays} carry-over = {totalAvailable} total days.
-                            </p>
+                            <p className="mt-1 text-sm text-slate-600">{baseDays} base + {birthdayDays} birthday + {bonusDays} bonus + {carryOverDays} carry-over = {formatAmount(totalAvailable)} total days.</p>
                           </div>
                         </div>
                       </div>
-                      <button onClick={resetCurrentYearAllowance} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
-                        Reset allowance for {year}
-                      </button>
+                      <button onClick={resetCurrentYearAllowance} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">Reset allowance for {year}</button>
+                    </div>
+                  </Panel>
+
+                  <Panel>
+                    <div className="space-y-4 p-5">
+                      <div>
+                        <h2 className="text-lg font-semibold">Day to add</h2>
+                        <p className="mt-1 text-sm text-slate-500">Choose the type and status, then click a day on the calendar.</p>
+                      </div>
+                      <div className="grid gap-2">
+                        <ChoiceButton active={selectedDayType === DAY_TYPES.VACATION_FULL} color="blue" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.VACATION_FULL })}>Vacation full day · 1 day</ChoiceButton>
+                        <ChoiceButton active={selectedDayType === DAY_TYPES.VACATION_HALF} color="cyan" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.VACATION_HALF })}>Vacation half day · 0.5 day</ChoiceButton>
+                        <ChoiceButton active={selectedDayType === DAY_TYPES.BIRTHDAY} color="purple" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.BIRTHDAY })}>Birthday day · locked to 1 per year</ChoiceButton>
+                        <ChoiceButton active={selectedDayType === DAY_TYPES.BONUS} color="emerald" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.BONUS })}>Bonus day · 1 day</ChoiceButton>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <ChoiceButton active={selectedStatus === STATUSES.PLANNED} onClick={() => updatePlannerState({ selectedStatus: STATUSES.PLANNED })}>Planned</ChoiceButton>
+                        <ChoiceButton active={selectedStatus === STATUSES.CONFIRMED} onClick={() => updatePlannerState({ selectedStatus: STATUSES.CONFIRMED })}>Confirmed</ChoiceButton>
+                      </div>
                     </div>
                   </Panel>
 
@@ -780,15 +947,38 @@
                         </span>
                         <input type="checkbox" checked={excludePortugalHolidays} onChange={(event) => toggleExcludePortugalHolidays(event.target.checked)} className="h-5 w-5 accent-amber-600" />
                       </label>
-                      <p className="rounded-2xl bg-slate-100 p-4 text-xs text-slate-600">
-                        Portugal mode includes national holidays such as Good Friday, Easter Sunday and Corpus Christi. It does not include municipal, regional or optional holidays such as Carnival.
-                      </p>
-                      <button onClick={clearCalendarForCurrentYear} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
-                        ↺ Clear selected days for {year}
-                      </button>
-                      <button onClick={resetEverything} className="w-full rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 transition hover:bg-red-100">
-                        Reset everything
-                      </button>
+                      <p className="rounded-2xl bg-slate-100 p-4 text-xs text-slate-600">Portugal mode includes national holidays such as Good Friday, Easter Sunday and Corpus Christi. It does not include municipal, regional or optional holidays such as Carnival.</p>
+                      <button onClick={clearCalendarForCurrentYear} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">↺ Clear selected days for {year}</button>
+                      <button onClick={resetEverything} className="w-full rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 transition hover:bg-red-100">Reset everything</button>
+                    </div>
+                  </Panel>
+
+                  <Panel>
+                    <div className="space-y-4 p-5">
+                      <div>
+                        <h2 className="text-lg font-semibold">Summary for {year}</h2>
+                        <p className="mt-1 text-sm text-slate-500">Quick overview by type and by month.</p>
+                      </div>
+                      <div className="space-y-2 text-sm">
+                        {Object.keys(yearlyTypeSummary).length === 0 ? (
+                          <p className="rounded-2xl bg-slate-100 p-4 text-slate-500">No selected days yet.</p>
+                        ) : (
+                          Object.entries(yearlyTypeSummary).map(([type, amount]) => (
+                            <div key={type} className="flex justify-between rounded-xl bg-slate-100 px-3 py-2">
+                              <span>{getTypeListLabel(type)}</span>
+                              <span className="font-semibold">{formatAmount(amount)}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                      <div className="space-y-2 text-sm">
+                        {monthlySummary.map((row) => (
+                          <div key={row.monthName} className="flex justify-between rounded-xl bg-blue-50 px-3 py-2 text-blue-950">
+                            <span>{row.monthName}</span>
+                            <span className="font-semibold">{formatAmount(row.amount)}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </Panel>
 
@@ -798,20 +988,12 @@
                         <h2 className="text-lg font-semibold">Backup and transfer</h2>
                         <p className="mt-1 text-sm text-slate-500">Export your full planner to a JSON file, including all saved years, move it to another device, and import it there.</p>
                       </div>
-                      <button onClick={exportPlannerJson} className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800">
-                        ⬇ Export full JSON backup
-                      </button>
-                      <button onClick={openImportDialog} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
-                        ⬆ Import JSON backup
-                      </button>
+                      <button onClick={exportPlannerJson} className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800">⬇ Export full JSON backup</button>
+                      <button onClick={openImportDialog} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">⬆ Import JSON backup</button>
                       {exportBackup ? (
                         <div className="space-y-3 rounded-2xl bg-slate-100 p-4">
-                          <a href={exportBackup.dataUrl} download={exportBackup.filename} className="block rounded-xl bg-blue-600 px-4 py-3 text-center text-sm font-medium text-white transition hover:bg-blue-700">
-                            Download {exportBackup.filename}
-                          </a>
-                          <button onClick={selectExportJsonText} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
-                            Select JSON text
-                          </button>
+                          <a href={exportBackup.dataUrl} download={exportBackup.filename} className="block rounded-xl bg-blue-600 px-4 py-3 text-center text-sm font-medium text-white transition hover:bg-blue-700">Download {exportBackup.filename}</a>
+                          <button onClick={selectExportJsonText} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">Select JSON text</button>
                           <textarea ref={jsonTextAreaRef} readOnly value={exportBackup.json} className="h-36 w-full rounded-xl border border-slate-200 bg-white p-3 font-mono text-xs text-slate-700 outline-none" />
                         </div>
                       ) : null}
@@ -839,12 +1021,20 @@
                         {selectedDateList.length === 0 ? (
                           <p className="rounded-2xl bg-slate-100 p-4 text-sm text-slate-500">No counted vacation days selected for {year} yet. Click working days in the calendar to add them.</p>
                         ) : (
-                          selectedDateList.map((dateKey) => (
-                            <div key={dateKey} className="flex items-center justify-between rounded-2xl bg-blue-50 px-4 py-3 text-sm">
-                              <span className="font-medium text-blue-950">{dateKey}</span>
-                              <button onClick={() => removeSelectedDate(dateKey)} className="rounded-full px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">Remove</button>
-                            </div>
-                          ))
+                          selectedDateList.map((dateKey) => {
+                            const entry = selectedDates[dateKey];
+                            return (
+                              <div key={dateKey} className="rounded-2xl bg-blue-50 px-4 py-3 text-sm">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div>
+                                    <p className="font-medium text-blue-950">{dateKey}</p>
+                                    <p className="text-xs text-blue-700">{getTypeListLabel(entry.type)} · {entry.status} · {formatAmount(entry.amount)} day(s)</p>
+                                  </div>
+                                  <button onClick={() => removeSelectedDate(dateKey)} className="rounded-full px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">Remove</button>
+                                </div>
+                              </div>
+                            );
+                          })
                         )}
                       </div>
                     </div>
