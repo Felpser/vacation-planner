@@ -15,8 +15,9 @@
     <script type="text/babel">
       const { useEffect, useMemo, useRef, useState } = React;
 
-      const STORAGE_KEY = "vacation-calendar-planner-v3";
+      const STORAGE_KEY = "vacation-calendar-planner-v4";
       const LEGACY_STORAGE_KEYS = [
+        "vacation-calendar-planner-v3",
         "vacation-calendar-planner-v2",
         "vacation-calendar-planner-v1",
       ];
@@ -27,6 +28,7 @@
         VACATION_HALF: "Vacation Half Day",
         BIRTHDAY: "Birthday Day",
         BONUS: "Bonus Day",
+        HOLIDAY: "National / Local Holiday",
       };
 
       const STATUSES = {
@@ -46,20 +48,6 @@
         const month = String(date.getMonth() + 1).padStart(2, "0");
         const day = String(date.getDate()).padStart(2, "0");
         return `${year}-${month}-${day}`;
-      }
-
-      function dateFromKey(dateKey) {
-        return new Date(
-          Number(dateKey.slice(0, 4)),
-          Number(dateKey.slice(5, 7)) - 1,
-          Number(dateKey.slice(8, 10))
-        );
-      }
-
-      function addDays(date, numberOfDays) {
-        const nextDate = new Date(date);
-        nextDate.setDate(nextDate.getDate() + numberOfDays);
-        return nextDate;
       }
 
       function getDaysInMonth(year, monthIndex) {
@@ -106,43 +94,6 @@
         return true;
       }
 
-      function getEasterSunday(year) {
-        const a = year % 19;
-        const b = Math.floor(year / 100);
-        const c = year % 100;
-        const d = Math.floor(b / 4);
-        const e = b % 4;
-        const f = Math.floor((b + 8) / 25);
-        const g = Math.floor((b - f + 1) / 3);
-        const h = (19 * a + b - d - g + 15) % 30;
-        const i = Math.floor(c / 4);
-        const k = c % 4;
-        const l = (32 + 2 * e + 2 * i - h - k) % 7;
-        const m = Math.floor((a + 11 * h + 22 * l) / 451);
-        const month = Math.floor((h + l - 7 * m + 114) / 31) - 1;
-        const day = ((h + l - 7 * m + 114) % 31) + 1;
-        return new Date(year, month, day);
-      }
-
-      function getPortugalNationalHolidays(year) {
-        const easterSunday = getEasterSunday(year);
-        return {
-          [`${year}-01-01`]: "New Year's Day",
-          [formatDateKey(addDays(easterSunday, -2))]: "Good Friday",
-          [formatDateKey(easterSunday)]: "Easter Sunday",
-          [`${year}-04-25`]: "Freedom Day",
-          [`${year}-05-01`]: "Labour Day",
-          [formatDateKey(addDays(easterSunday, 60))]: "Corpus Christi",
-          [`${year}-06-10`]: "Portugal Day",
-          [`${year}-08-15`]: "Assumption of Mary",
-          [`${year}-10-05`]: "Republic Day",
-          [`${year}-11-01`]: "All Saints' Day",
-          [`${year}-12-01`]: "Restoration of Independence",
-          [`${year}-12-08`]: "Immaculate Conception",
-          [`${year}-12-25`]: "Christmas Day",
-        };
-      }
-
       function getDefaultYearSettings() {
         return {
           baseDays: 22,
@@ -172,7 +123,6 @@
             [currentYear]: getDefaultYearSettings(),
           },
           excludeWeekends: true,
-          excludePortugalHolidays: false,
           selectedDates: {},
           selectedDayType: DAY_TYPES.VACATION_FULL,
           selectedStatus: STATUSES.PLANNED,
@@ -182,7 +132,12 @@
 
       function getDayAmount(dayType) {
         if (dayType === DAY_TYPES.VACATION_HALF) return 0.5;
+        if (dayType === DAY_TYPES.HOLIDAY) return 0;
         return 1;
+      }
+
+      function isCountedDay(dayEntry) {
+        return dayEntry?.type !== DAY_TYPES.HOLIDAY;
       }
 
       function normalizeSelectedDates(selectedDates) {
@@ -205,7 +160,7 @@
           acc[dateKey] = {
             type: validType,
             amount: getDayAmount(validType),
-            status: validStatus,
+            status: validType === DAY_TYPES.HOLIDAY ? STATUSES.CONFIRMED : validStatus,
           };
 
           return acc;
@@ -254,10 +209,6 @@
           yearSettings: normalizeAllYearSettings(input.yearSettings, normalizedYear, input),
           excludeWeekends:
             typeof input.excludeWeekends === "boolean" ? input.excludeWeekends : defaults.excludeWeekends,
-          excludePortugalHolidays:
-            typeof input.excludePortugalHolidays === "boolean"
-              ? input.excludePortugalHolidays
-              : defaults.excludePortugalHolidays,
           selectedDates: normalizeSelectedDates(input.selectedDates),
           selectedDayType: Object.values(DAY_TYPES).includes(rawSelectedDayType)
             ? rawSelectedDayType
@@ -309,7 +260,7 @@
       function createExportPayload(state) {
         return {
           app: "Vacation Control Calendar",
-          version: 3,
+          version: 4,
           exportedAt: new Date().toISOString(),
           plannerState: normalizePlannerState(state),
         };
@@ -328,25 +279,14 @@
         return { filename, json, dataUrl };
       }
 
-      function isBlockedDate(dateKey, options) {
-        const date = dateFromKey(dateKey);
-        if (options.excludeWeekends && isWeekend(date)) return true;
-        if (options.excludePortugalHolidays && options.portugalHolidays[dateKey]) return true;
-        return false;
-      }
-
-      function removeBlockedDatesForYear(selectedDates, year, options) {
+      function removeWeekendDatesForYear(selectedDates, year) {
         const nextSelectedDates = { ...selectedDates };
         Object.keys(nextSelectedDates).forEach((dateKey) => {
-          if (dateKey.startsWith(`${year}-`) && isBlockedDate(dateKey, options)) {
+          if (dateKey.startsWith(`${year}-`) && isWeekend(new Date(dateKey))) {
             delete nextSelectedDates[dateKey];
           }
         });
         return nextSelectedDates;
-      }
-
-      function getYearFromDateKey(dateKey) {
-        return Number(dateKey.slice(0, 4));
       }
 
       function formatAmount(value) {
@@ -357,6 +297,7 @@
         if (type === DAY_TYPES.VACATION_HALF) return "½";
         if (type === DAY_TYPES.BIRTHDAY) return "B";
         if (type === DAY_TYPES.BONUS) return "+";
+        if (type === DAY_TYPES.HOLIDAY) return "H";
         return "";
       }
 
@@ -365,10 +306,14 @@
         if (type === DAY_TYPES.VACATION_HALF) return "Vacation half day";
         if (type === DAY_TYPES.BIRTHDAY) return "Birthday day";
         if (type === DAY_TYPES.BONUS) return "Bonus day";
+        if (type === DAY_TYPES.HOLIDAY) return "National / Local holiday";
         return type;
       }
 
       function getColorClassForSelectedDay(dayEntry) {
+        if (dayEntry.type === DAY_TYPES.HOLIDAY) {
+          return "bg-amber-500 text-white shadow-sm hover:bg-amber-600";
+        }
         if (dayEntry.type === DAY_TYPES.BIRTHDAY) {
           return "bg-purple-600 text-white shadow-sm hover:bg-purple-700";
         }
@@ -400,6 +345,7 @@
           green: { badge: "bg-emerald-100 text-emerald-700", value: "text-emerald-700" },
           red: { badge: "bg-red-100 text-red-700", value: "text-red-600" },
           purple: { badge: "bg-purple-100 text-purple-700", value: "text-purple-700" },
+          amber: { badge: "bg-amber-100 text-amber-700", value: "text-amber-700" },
         };
         const styles = toneMap[tone] || toneMap.default;
 
@@ -442,6 +388,7 @@
           cyan: "bg-cyan-600 text-white border-cyan-600",
           purple: "bg-purple-600 text-white border-purple-600",
           emerald: "bg-emerald-600 text-white border-emerald-600",
+          amber: "bg-amber-500 text-white border-amber-500",
         };
 
         return (
@@ -465,9 +412,8 @@
         selectedDates,
         onDateClick,
         excludeWeekends,
-        excludePortugalHolidays,
-        portugalHolidays,
         selectedCount,
+        holidayCount,
       }) {
         const daysInMonth = getDaysInMonth(year, monthIndex);
         const startOffset = getMondayBasedStartOffset(year, monthIndex);
@@ -484,11 +430,14 @@
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
                   <h3 className="text-lg font-semibold">{monthName}</h3>
-                  <p className="text-xs text-slate-500">{formatAmount(selectedCount)} day(s)</p>
+                  <p className="text-xs text-slate-500">
+                    {formatAmount(selectedCount)} counted day(s)
+                    {holidayCount > 0 ? ` · ${holidayCount} holiday(s)` : ""}
+                  </p>
                 </div>
                 {selectedCount > 0 ? (
                   <div className="rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-800">
-                    {formatAmount(selectedCount)} selected
+                    {formatAmount(selectedCount)} used
                   </div>
                 ) : null}
               </div>
@@ -507,23 +456,16 @@
                   const selectedEntry = selectedDates[key];
                   const selected = Boolean(selectedEntry);
                   const weekend = isWeekend(date);
-                  const holidayName = portugalHolidays[key];
                   const disabledByWeekend = excludeWeekends && weekend;
-                  const disabledByHoliday = excludePortugalHolidays && Boolean(holidayName);
-                  const disabled = disabledByWeekend || disabledByHoliday;
 
                   let className = "relative aspect-square rounded-xl text-sm font-medium transition ";
 
-                  if (disabledByHoliday) {
-                    className += "cursor-not-allowed bg-amber-100 text-amber-800 ring-1 ring-amber-200";
-                  } else if (selected) {
+                  if (selected) {
                     className += getColorClassForSelectedDay(selectedEntry);
                   } else if (disabledByWeekend) {
                     className += "cursor-not-allowed bg-slate-100 text-slate-300";
                   } else if (weekend) {
                     className += "bg-slate-50 text-slate-400 hover:bg-slate-100";
-                  } else if (holidayName) {
-                    className += "bg-amber-50 text-amber-700 ring-1 ring-amber-100 hover:bg-amber-100";
                   } else {
                     className += "bg-white text-slate-700 ring-1 ring-slate-100 hover:bg-blue-50 hover:text-blue-700 hover:ring-blue-200";
                   }
@@ -532,24 +474,17 @@
                     <button
                       key={key}
                       onClick={() => onDateClick(date)}
-                      disabled={disabled}
+                      disabled={disabledByWeekend}
                       title={
-                        disabledByHoliday
-                          ? `${holidayName} · Portugal national holiday excluded`
-                          : holidayName
-                            ? `${holidayName} · Portugal national holiday`
-                            : disabledByWeekend
-                              ? "Weekend excluded"
-                              : selected
-                                ? `${getTypeListLabel(selectedEntry.type)} · ${selectedEntry.status} · Click to remove`
-                                : "Click to add selected day type"
+                        disabledByWeekend
+                          ? "Weekend excluded"
+                          : selected
+                            ? `${getTypeListLabel(selectedEntry.type)} · ${selectedEntry.status} · Click to remove`
+                            : "Click to add selected day type"
                       }
                       className={className}
                     >
                       {date.getDate()}
-                      {holidayName ? (
-                        <span className="absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-amber-500" />
-                      ) : null}
                       {selectedEntry ? (
                         <span className="absolute right-1 top-0.5 text-[10px] font-bold">
                           {getTypeShortLabel(selectedEntry.type)}
@@ -574,14 +509,12 @@
         const {
           year,
           excludeWeekends,
-          excludePortugalHolidays,
           selectedDates,
           selectedDayType,
           selectedStatus,
           lastSavedAt,
         } = plannerState;
 
-        const portugalHolidays = useMemo(() => getPortugalNationalHolidays(year), [year]);
         const currentYearSettings = getSettingsForYear(plannerState, year);
         const { baseDays, birthdayDays, bonusDays, carryOverDays } = currentYearSettings;
 
@@ -622,54 +555,68 @@
           );
         }, [baseDays, birthdayDays, bonusDays, carryOverDays]);
 
-        const selectedDateList = useMemo(() => {
+        const yearDateList = useMemo(() => {
           return Object.keys(selectedDates)
             .filter((dateKey) => dateKey.startsWith(`${year}-`))
-            .filter((dateKey) =>
-              !isBlockedDate(dateKey, { excludeWeekends, excludePortugalHolidays, portugalHolidays })
-            )
             .sort();
-        }, [selectedDates, year, excludeWeekends, excludePortugalHolidays, portugalHolidays]);
+        }, [selectedDates, year]);
+
+        const countedDateList = useMemo(() => {
+          return yearDateList.filter((dateKey) => isCountedDay(selectedDates[dateKey]));
+        }, [yearDateList, selectedDates]);
+
+        const holidayDateList = useMemo(() => {
+          return yearDateList.filter((dateKey) => selectedDates[dateKey]?.type === DAY_TYPES.HOLIDAY);
+        }, [yearDateList, selectedDates]);
 
         const daysUsed = useMemo(() => {
-          return selectedDateList.reduce((sum, dateKey) => {
+          return countedDateList.reduce((sum, dateKey) => {
             return sum + toSafeNumber(selectedDates[dateKey]?.amount || 1);
           }, 0);
-        }, [selectedDateList, selectedDates]);
+        }, [countedDateList, selectedDates]);
 
         const birthdayUsed = useMemo(() => {
-          return selectedDateList.some((dateKey) => selectedDates[dateKey]?.type === DAY_TYPES.BIRTHDAY) ? 1 : 0;
-        }, [selectedDateList, selectedDates]);
+          return countedDateList.some((dateKey) => selectedDates[dateKey]?.type === DAY_TYPES.BIRTHDAY) ? 1 : 0;
+        }, [countedDateList, selectedDates]);
 
         const remainingDays = totalAvailable - daysUsed;
 
         const vacationByMonth = useMemo(() => {
-          return selectedDateList.reduce((acc, dateKey) => {
+          return countedDateList.reduce((acc, dateKey) => {
             const month = Number(dateKey.slice(5, 7)) - 1;
             acc[month] = (acc[month] || 0) + toSafeNumber(selectedDates[dateKey]?.amount || 1);
             return acc;
           }, {});
-        }, [selectedDateList, selectedDates]);
+        }, [countedDateList, selectedDates]);
+
+        const holidaysByMonth = useMemo(() => {
+          return holidayDateList.reduce((acc, dateKey) => {
+            const month = Number(dateKey.slice(5, 7)) - 1;
+            acc[month] = (acc[month] || 0) + 1;
+            return acc;
+          }, {});
+        }, [holidayDateList]);
 
         const monthlySummary = useMemo(() => {
           return MONTH_NAMES.map((monthName, monthIndex) => ({
             monthName,
             amount: vacationByMonth[monthIndex] || 0,
-          })).filter((row) => row.amount > 0);
-        }, [vacationByMonth]);
+            holidays: holidaysByMonth[monthIndex] || 0,
+          })).filter((row) => row.amount > 0 || row.holidays > 0);
+        }, [vacationByMonth, holidaysByMonth]);
 
         const yearlyTypeSummary = useMemo(() => {
-          return selectedDateList.reduce((acc, dateKey) => {
+          return yearDateList.reduce((acc, dateKey) => {
             const entry = selectedDates[dateKey];
             if (!entry) return acc;
-            acc[entry.type] = (acc[entry.type] || 0) + toSafeNumber(entry.amount || 1);
+            acc[entry.type] = (acc[entry.type] || 0) + (entry.type === DAY_TYPES.HOLIDAY ? 1 : toSafeNumber(entry.amount || 1));
             return acc;
           }, {});
-        }, [selectedDateList, selectedDates]);
+        }, [yearDateList, selectedDates]);
 
         function toggleDate(date) {
           const key = formatDateKey(date);
-          if (isBlockedDate(key, { excludeWeekends, excludePortugalHolidays, portugalHolidays })) return;
+          if (excludeWeekends && isWeekend(date)) return;
 
           setPlannerState((previous) => {
             const nextSelectedDates = { ...previous.selectedDates };
@@ -693,7 +640,7 @@
             nextSelectedDates[key] = {
               type: previous.selectedDayType,
               amount: getDayAmount(previous.selectedDayType),
-              status: previous.selectedStatus,
+              status: previous.selectedDayType === DAY_TYPES.HOLIDAY ? STATUSES.CONFIRMED : previous.selectedStatus,
             };
 
             return { ...previous, selectedDates: nextSelectedDates };
@@ -715,37 +662,13 @@
         }
 
         function toggleExcludeWeekends(checked) {
-          setPlannerState((previous) => {
-            const nextOptions = {
-              excludeWeekends: checked,
-              excludePortugalHolidays: previous.excludePortugalHolidays,
-              portugalHolidays: getPortugalNationalHolidays(previous.year),
-            };
-            return {
-              ...previous,
-              excludeWeekends: checked,
-              selectedDates: checked
-                ? removeBlockedDatesForYear(previous.selectedDates, previous.year, nextOptions)
-                : previous.selectedDates,
-            };
-          });
-        }
-
-        function toggleExcludePortugalHolidays(checked) {
-          setPlannerState((previous) => {
-            const nextOptions = {
-              excludeWeekends: previous.excludeWeekends,
-              excludePortugalHolidays: checked,
-              portugalHolidays: getPortugalNationalHolidays(previous.year),
-            };
-            return {
-              ...previous,
-              excludePortugalHolidays: checked,
-              selectedDates: checked
-                ? removeBlockedDatesForYear(previous.selectedDates, previous.year, nextOptions)
-                : previous.selectedDates,
-            };
-          });
+          setPlannerState((previous) => ({
+            ...previous,
+            excludeWeekends: checked,
+            selectedDates: checked
+              ? removeWeekendDatesForYear(previous.selectedDates, previous.year)
+              : previous.selectedDates,
+          }));
         }
 
         function clearCalendarForCurrentYear() {
@@ -790,7 +713,7 @@
           const preparedExport = createJsonExport(filename, payload);
           setExportBackup(preparedExport);
           setImportExportMessage(
-            `Full backup prepared: ${filename}. This includes selected dates, day types, statuses and allowance settings for all saved years. If downloads are blocked, select the JSON text and copy it manually.`
+            `Full backup prepared: ${filename}. This includes selected dates, holidays, day types, statuses and allowance settings for all saved years. If downloads are blocked, select the JSON text and copy it manually.`
           );
         }
 
@@ -832,7 +755,6 @@
         const readableLastSavedAt = lastSavedAt
           ? new Date(lastSavedAt).toLocaleString()
           : "Automatically saved in this browser";
-        const portugalHolidayCount = Object.keys(portugalHolidays).length;
 
         return (
           <div className="min-h-screen bg-slate-50 p-4 text-slate-900 md:p-8">
@@ -846,13 +768,13 @@
                     </div>
                     <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">Vacation Control Calendar</h1>
                     <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300 md:text-base">
-                      Select planned vacation days directly on the calendar, classify them by type and status, and instantly see the impact on your yearly balance.
+                      Select vacation, birthday, bonus and holiday days directly on the calendar and instantly see the impact on your yearly balance.
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <p className="inline-flex rounded-full bg-emerald-400/10 px-3 py-1 text-xs font-medium text-emerald-200 ring-1 ring-emerald-300/20">Auto-save enabled</p>
                       <p className="inline-flex rounded-full bg-blue-400/10 px-3 py-1 text-xs font-medium text-blue-200 ring-1 ring-blue-300/20">Full JSON backup</p>
                       <p className="inline-flex rounded-full bg-purple-400/10 px-3 py-1 text-xs font-medium text-purple-200 ring-1 ring-purple-300/20">Birthday locked to 1 day</p>
-                      <p className="inline-flex rounded-full bg-amber-400/10 px-3 py-1 text-xs font-medium text-amber-200 ring-1 ring-amber-300/20">Portugal holidays available</p>
+                      <p className="inline-flex rounded-full bg-amber-400/10 px-3 py-1 text-xs font-medium text-amber-200 ring-1 ring-amber-300/20">Manual holidays</p>
                     </div>
                   </div>
 
@@ -868,21 +790,42 @@
                 </div>
               </header>
 
-              <section className="grid gap-4 md:grid-cols-4">
+              <section className="grid gap-4 md:grid-cols-5">
                 <StatCard label="Total available" value={formatAmount(totalAvailable)} icon="➕" tone="default" subtext={`Allowance for ${year}`} />
                 <StatCard label="Scheduled" value={formatAmount(daysUsed)} icon="✈️" tone="blue" subtext={`Counted days in ${year}`} />
                 <StatCard label="Remaining" value={formatAmount(remainingDays)} icon="🎁" tone={balanceTone} subtext={`Balance for ${year}`} />
-                <StatCard
-                  label="Birthday used"
-                  value={`${birthdayUsed}/${birthdayDays}`}
-                  icon="🎂"
-                  tone="purple"
-                  subtext={birthdayUsed ? "Birthday date selected" : "No birthday date selected"}
-                />
+                <StatCard label="Birthday used" value={`${birthdayUsed}/${birthdayDays}`} icon="🎂" tone="purple" subtext={birthdayUsed ? "Birthday date selected" : "No birthday date selected"} />
+                <StatCard label="Holidays" value={holidayDateList.length} icon="🏖️" tone="amber" subtext={`Non-counted in ${year}`} />
               </section>
 
               <section className="grid gap-6 lg:grid-cols-[360px_1fr]">
                 <aside className="space-y-6">
+                  <Panel>
+                    <div className="space-y-4 p-5">
+                      <div>
+                        <h2 className="text-lg font-semibold">Day to add</h2>
+                        <p className="mt-1 text-sm text-slate-500">Choose the type and status, then click a day on the calendar.</p>
+                      </div>
+                      <div className="grid gap-2">
+                        <ChoiceButton active={selectedDayType === DAY_TYPES.VACATION_FULL} color="blue" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.VACATION_FULL })}>Vacation full day · 1 day</ChoiceButton>
+                        <ChoiceButton active={selectedDayType === DAY_TYPES.VACATION_HALF} color="cyan" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.VACATION_HALF })}>Vacation half day · 0.5 day</ChoiceButton>
+                        <ChoiceButton active={selectedDayType === DAY_TYPES.BIRTHDAY} color="purple" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.BIRTHDAY })}>Birthday day · locked to 1 per year</ChoiceButton>
+                        <ChoiceButton active={selectedDayType === DAY_TYPES.BONUS} color="emerald" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.BONUS })}>Bonus day · 1 day</ChoiceButton>
+                        <ChoiceButton active={selectedDayType === DAY_TYPES.HOLIDAY} color="amber" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.HOLIDAY })}>National / Local holiday · does not reduce balance</ChoiceButton>
+                      </div>
+                      {selectedDayType !== DAY_TYPES.HOLIDAY ? (
+                        <div className="grid grid-cols-2 gap-2">
+                          <ChoiceButton active={selectedStatus === STATUSES.PLANNED} onClick={() => updatePlannerState({ selectedStatus: STATUSES.PLANNED })}>Planned</ChoiceButton>
+                          <ChoiceButton active={selectedStatus === STATUSES.CONFIRMED} onClick={() => updatePlannerState({ selectedStatus: STATUSES.CONFIRMED })}>Confirmed</ChoiceButton>
+                        </div>
+                      ) : (
+                        <p className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-800 ring-1 ring-amber-100">
+                          Holidays are shown in amber and are not subtracted from your vacation balance.
+                        </p>
+                      )}
+                    </div>
+                  </Panel>
+
                   <Panel>
                     <div className="space-y-4 p-5">
                       <div>
@@ -911,25 +854,6 @@
                   <Panel>
                     <div className="space-y-4 p-5">
                       <div>
-                        <h2 className="text-lg font-semibold">Day to add</h2>
-                        <p className="mt-1 text-sm text-slate-500">Choose the type and status, then click a day on the calendar.</p>
-                      </div>
-                      <div className="grid gap-2">
-                        <ChoiceButton active={selectedDayType === DAY_TYPES.VACATION_FULL} color="blue" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.VACATION_FULL })}>Vacation full day · 1 day</ChoiceButton>
-                        <ChoiceButton active={selectedDayType === DAY_TYPES.VACATION_HALF} color="cyan" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.VACATION_HALF })}>Vacation half day · 0.5 day</ChoiceButton>
-                        <ChoiceButton active={selectedDayType === DAY_TYPES.BIRTHDAY} color="purple" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.BIRTHDAY })}>Birthday day · locked to 1 per year</ChoiceButton>
-                        <ChoiceButton active={selectedDayType === DAY_TYPES.BONUS} color="emerald" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.BONUS })}>Bonus day · 1 day</ChoiceButton>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <ChoiceButton active={selectedStatus === STATUSES.PLANNED} onClick={() => updatePlannerState({ selectedStatus: STATUSES.PLANNED })}>Planned</ChoiceButton>
-                        <ChoiceButton active={selectedStatus === STATUSES.CONFIRMED} onClick={() => updatePlannerState({ selectedStatus: STATUSES.CONFIRMED })}>Confirmed</ChoiceButton>
-                      </div>
-                    </div>
-                  </Panel>
-
-                  <Panel>
-                    <div className="space-y-4 p-5">
-                      <div>
                         <h2 className="text-lg font-semibold">Calendar rules</h2>
                         <p className="mt-1 text-sm text-slate-500">Control how clicked days are counted.</p>
                       </div>
@@ -940,14 +864,9 @@
                         </span>
                         <input type="checkbox" checked={excludeWeekends} onChange={(event) => toggleExcludeWeekends(event.target.checked)} className="h-5 w-5 accent-slate-900" />
                       </label>
-                      <label className="flex cursor-pointer items-center justify-between rounded-2xl bg-amber-50 p-4 ring-1 ring-amber-100">
-                        <span>
-                          <span className="block text-sm font-medium text-amber-950">Exclude Portugal national holidays</span>
-                          <span className="block text-xs text-amber-800">Highlights and blocks {portugalHolidayCount} national holidays for {year}.</span>
-                        </span>
-                        <input type="checkbox" checked={excludePortugalHolidays} onChange={(event) => toggleExcludePortugalHolidays(event.target.checked)} className="h-5 w-5 accent-amber-600" />
-                      </label>
-                      <p className="rounded-2xl bg-slate-100 p-4 text-xs text-slate-600">Portugal mode includes national holidays such as Good Friday, Easter Sunday and Corpus Christi. It does not include municipal, regional or optional holidays such as Carnival.</p>
+                      <p className="rounded-2xl bg-slate-100 p-4 text-xs text-slate-600">
+                        Holidays are now added manually through the “Day to add” section. Use the National / Local holiday type for public, local or company non-working days.
+                      </p>
                       <button onClick={clearCalendarForCurrentYear} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">↺ Clear selected days for {year}</button>
                       <button onClick={resetEverything} className="w-full rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 transition hover:bg-red-100">Reset everything</button>
                     </div>
@@ -964,7 +883,7 @@
                           <p className="rounded-2xl bg-slate-100 p-4 text-slate-500">No selected days yet.</p>
                         ) : (
                           Object.entries(yearlyTypeSummary).map(([type, amount]) => (
-                            <div key={type} className="flex justify-between rounded-xl bg-slate-100 px-3 py-2">
+                            <div key={type} className={`flex justify-between rounded-xl px-3 py-2 ${type === DAY_TYPES.HOLIDAY ? "bg-amber-50 text-amber-900" : "bg-slate-100"}`}>
                               <span>{getTypeListLabel(type)}</span>
                               <span className="font-semibold">{formatAmount(amount)}</span>
                             </div>
@@ -975,7 +894,11 @@
                         {monthlySummary.map((row) => (
                           <div key={row.monthName} className="flex justify-between rounded-xl bg-blue-50 px-3 py-2 text-blue-950">
                             <span>{row.monthName}</span>
-                            <span className="font-semibold">{formatAmount(row.amount)}</span>
+                            <span className="font-semibold">
+                              {row.amount > 0 ? `${formatAmount(row.amount)} day(s)` : ""}
+                              {row.amount > 0 && row.holidays > 0 ? " · " : ""}
+                              {row.holidays > 0 ? `${row.holidays} holiday(s)` : ""}
+                            </span>
                           </div>
                         ))}
                       </div>
@@ -1018,19 +941,21 @@
                     <div className="p-5">
                       <h2 className="text-lg font-semibold">Selected days in {year}</h2>
                       <div className="mt-4 max-h-80 space-y-2 overflow-auto pr-1">
-                        {selectedDateList.length === 0 ? (
-                          <p className="rounded-2xl bg-slate-100 p-4 text-sm text-slate-500">No counted vacation days selected for {year} yet. Click working days in the calendar to add them.</p>
+                        {yearDateList.length === 0 ? (
+                          <p className="rounded-2xl bg-slate-100 p-4 text-sm text-slate-500">No days selected for {year} yet. Click days in the calendar to add them.</p>
                         ) : (
-                          selectedDateList.map((dateKey) => {
+                          yearDateList.map((dateKey) => {
                             const entry = selectedDates[dateKey];
                             return (
-                              <div key={dateKey} className="rounded-2xl bg-blue-50 px-4 py-3 text-sm">
+                              <div key={dateKey} className={`rounded-2xl px-4 py-3 text-sm ${entry.type === DAY_TYPES.HOLIDAY ? "bg-amber-50" : "bg-blue-50"}`}>
                                 <div className="flex items-center justify-between gap-3">
                                   <div>
-                                    <p className="font-medium text-blue-950">{dateKey}</p>
-                                    <p className="text-xs text-blue-700">{getTypeListLabel(entry.type)} · {entry.status} · {formatAmount(entry.amount)} day(s)</p>
+                                    <p className={entry.type === DAY_TYPES.HOLIDAY ? "font-medium text-amber-950" : "font-medium text-blue-950"}>{dateKey}</p>
+                                    <p className={entry.type === DAY_TYPES.HOLIDAY ? "text-xs text-amber-700" : "text-xs text-blue-700"}>
+                                      {getTypeListLabel(entry.type)} · {entry.type === DAY_TYPES.HOLIDAY ? "Non-counted" : `${entry.status} · ${formatAmount(entry.amount)} day(s)`}
+                                    </p>
                                   </div>
-                                  <button onClick={() => removeSelectedDate(dateKey)} className="rounded-full px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">Remove</button>
+                                  <button onClick={() => removeSelectedDate(dateKey)} className={`rounded-full px-2 py-1 text-xs font-medium ${entry.type === DAY_TYPES.HOLIDAY ? "text-amber-700 hover:bg-amber-100" : "text-blue-700 hover:bg-blue-100"}`}>Remove</button>
                                 </div>
                               </div>
                             );
@@ -1051,9 +976,8 @@
                       selectedDates={selectedDates}
                       onDateClick={toggleDate}
                       excludeWeekends={excludeWeekends}
-                      excludePortugalHolidays={excludePortugalHolidays}
-                      portugalHolidays={portugalHolidays}
                       selectedCount={vacationByMonth[monthIndex] || 0}
+                      holidayCount={holidaysByMonth[monthIndex] || 0}
                     />
                   ))}
                 </main>
