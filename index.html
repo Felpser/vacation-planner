@@ -15,8 +15,9 @@
     <script type="text/babel">
       const { useEffect, useMemo, useRef, useState } = React;
 
-      const STORAGE_KEY = "vacation-calendar-planner-v4";
+      const STORAGE_KEY = "vacation-calendar-planner-v5";
       const LEGACY_STORAGE_KEYS = [
+        "vacation-calendar-planner-v4",
         "vacation-calendar-planner-v3",
         "vacation-calendar-planner-v2",
         "vacation-calendar-planner-v1",
@@ -26,6 +27,7 @@
       const DAY_TYPES = {
         VACATION_FULL: "Vacation Full Day",
         VACATION_HALF: "Vacation Half Day",
+        FLEX_TIME: "Flex Time",
         BIRTHDAY: "Birthday Day",
         BONUS: "Bonus Day",
         HOLIDAY: "National / Local Holiday",
@@ -100,6 +102,7 @@
           birthdayDays: 1,
           bonusDays: 1,
           carryOverDays: 4,
+          flexTimeDays: 0,
         };
       }
 
@@ -112,6 +115,7 @@
           birthdayDays: clampNumber(input.birthdayDays, 0, 1),
           bonusDays: Math.max(0, toSafeNumber(input.bonusDays)),
           carryOverDays: Math.max(0, toSafeNumber(input.carryOverDays)),
+          flexTimeDays: Math.max(0, toSafeNumber(input.flexTimeDays)),
         };
       }
 
@@ -152,6 +156,7 @@
           const validType = Object.values(DAY_TYPES).includes(migratedType)
             ? migratedType
             : DAY_TYPES.VACATION_FULL;
+
           const rawStatus = input.status || STATUSES.PLANNED;
           const validStatus = Object.values(STATUSES).includes(rawStatus)
             ? rawStatus
@@ -185,6 +190,7 @@
             birthdayDays: legacyInput?.birthdayDays ?? 1,
             bonusDays: legacyInput?.bonusDays ?? 1,
             carryOverDays: legacyInput?.carryOverDays ?? 4,
+            flexTimeDays: legacyInput?.flexTimeDays ?? 0,
           });
         }
 
@@ -253,14 +259,14 @@
           window.localStorage.removeItem(STORAGE_KEY);
           LEGACY_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
         } catch (error) {
-          console.warn("Could not clear saved vacation planner state:", error);
+          console.warn("Could not clear saved planner state:", error);
         }
       }
 
       function createExportPayload(state) {
         return {
           app: "Vacation Control Calendar",
-          version: 4,
+          version: 5,
           exportedAt: new Date().toISOString(),
           plannerState: normalizePlannerState(state),
         };
@@ -295,6 +301,7 @@
 
       function getTypeShortLabel(type) {
         if (type === DAY_TYPES.VACATION_HALF) return "½";
+        if (type === DAY_TYPES.FLEX_TIME) return "F";
         if (type === DAY_TYPES.BIRTHDAY) return "B";
         if (type === DAY_TYPES.BONUS) return "+";
         if (type === DAY_TYPES.HOLIDAY) return "H";
@@ -304,6 +311,7 @@
       function getTypeListLabel(type) {
         if (type === DAY_TYPES.VACATION_FULL) return "Vacation full day";
         if (type === DAY_TYPES.VACATION_HALF) return "Vacation half day";
+        if (type === DAY_TYPES.FLEX_TIME) return "Flex time";
         if (type === DAY_TYPES.BIRTHDAY) return "Birthday day";
         if (type === DAY_TYPES.BONUS) return "Bonus day";
         if (type === DAY_TYPES.HOLIDAY) return "National / Local holiday";
@@ -313,6 +321,11 @@
       function getColorClassForSelectedDay(dayEntry) {
         if (dayEntry.type === DAY_TYPES.HOLIDAY) {
           return "bg-amber-500 text-white shadow-sm hover:bg-amber-600";
+        }
+        if (dayEntry.type === DAY_TYPES.FLEX_TIME) {
+          return dayEntry.status === STATUSES.CONFIRMED
+            ? "bg-orange-700 text-white shadow-sm hover:bg-orange-800"
+            : "bg-orange-500 text-white shadow-sm hover:bg-orange-600";
         }
         if (dayEntry.type === DAY_TYPES.BIRTHDAY) {
           return "bg-purple-600 text-white shadow-sm hover:bg-purple-700";
@@ -346,6 +359,7 @@
           red: { badge: "bg-red-100 text-red-700", value: "text-red-600" },
           purple: { badge: "bg-purple-100 text-purple-700", value: "text-purple-700" },
           amber: { badge: "bg-amber-100 text-amber-700", value: "text-amber-700" },
+          orange: { badge: "bg-orange-100 text-orange-700", value: "text-orange-700" },
         };
         const styles = toneMap[tone] || toneMap.default;
 
@@ -381,6 +395,27 @@
         );
       }
 
+      function CategoryBalanceRow({ label, available, used, remaining, note }) {
+        const isNegative = remaining < 0;
+
+        return (
+          <div className={`rounded-xl px-3 py-2 text-sm ${
+            isNegative ? "bg-red-50 text-red-800" : "bg-slate-100 text-slate-700"
+          }`}>
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-medium">{label}</span>
+              <span className={`font-semibold ${isNegative ? "text-red-700" : "text-slate-900"}`}>
+                {formatAmount(remaining)} left
+              </span>
+            </div>
+            <p className="mt-1 text-xs opacity-80">
+              Available {formatAmount(available)} · Used {formatAmount(used)}
+              {note ? ` · ${note}` : ""}
+            </p>
+          </div>
+        );
+      }
+
       function ChoiceButton({ active, onClick, children, color = "slate" }) {
         const activeClasses = {
           slate: "bg-slate-900 text-white border-slate-900",
@@ -389,6 +424,7 @@
           purple: "bg-purple-600 text-white border-purple-600",
           emerald: "bg-emerald-600 text-white border-emerald-600",
           amber: "bg-amber-500 text-white border-amber-500",
+          orange: "bg-orange-500 text-white border-orange-500",
         };
 
         return (
@@ -516,7 +552,7 @@
         } = plannerState;
 
         const currentYearSettings = getSettingsForYear(plannerState, year);
-        const { baseDays, birthdayDays, bonusDays, carryOverDays } = currentYearSettings;
+        const { baseDays, birthdayDays, bonusDays, carryOverDays, flexTimeDays } = currentYearSettings;
 
         useEffect(() => {
           savePlannerState(plannerState);
@@ -551,9 +587,10 @@
             toSafeNumber(baseDays) +
             toSafeNumber(birthdayDays) +
             toSafeNumber(bonusDays) +
-            toSafeNumber(carryOverDays)
+            toSafeNumber(carryOverDays) +
+            toSafeNumber(flexTimeDays)
           );
-        }, [baseDays, birthdayDays, bonusDays, carryOverDays]);
+        }, [baseDays, birthdayDays, bonusDays, carryOverDays, flexTimeDays]);
 
         const yearDateList = useMemo(() => {
           return Object.keys(selectedDates)
@@ -578,6 +615,71 @@
         const birthdayUsed = useMemo(() => {
           return countedDateList.some((dateKey) => selectedDates[dateKey]?.type === DAY_TYPES.BIRTHDAY) ? 1 : 0;
         }, [countedDateList, selectedDates]);
+
+        const categoryBalanceRows = useMemo(() => {
+          const sumByType = (types) => {
+            return countedDateList.reduce((sum, dateKey) => {
+              const entry = selectedDates[dateKey];
+              if (!entry || !types.includes(entry.type)) return sum;
+              return sum + toSafeNumber(entry.amount || 1);
+            }, 0);
+          };
+
+          const normalVacationUsed = sumByType([
+            DAY_TYPES.VACATION_FULL,
+            DAY_TYPES.VACATION_HALF,
+          ]);
+
+          const carryOverUsed = Math.min(toSafeNumber(carryOverDays), normalVacationUsed);
+          const baseVacationUsed = Math.max(0, normalVacationUsed - toSafeNumber(carryOverDays));
+
+          const flexTimeUsed = sumByType([DAY_TYPES.FLEX_TIME]);
+          const birthdayUsedAmount = sumByType([DAY_TYPES.BIRTHDAY]);
+          const bonusUsed = sumByType([DAY_TYPES.BONUS]);
+
+          return [
+            {
+              label: "Carry-over from last year",
+              available: toSafeNumber(carryOverDays),
+              used: carryOverUsed,
+              remaining: toSafeNumber(carryOverDays) - carryOverUsed,
+              note: "used first by vacation days",
+            },
+            {
+              label: "This year vacation",
+              available: toSafeNumber(baseDays),
+              used: baseVacationUsed,
+              remaining: toSafeNumber(baseDays) - baseVacationUsed,
+              note: "used after carry-over",
+            },
+            {
+              label: "Flex time",
+              available: toSafeNumber(flexTimeDays),
+              used: flexTimeUsed,
+              remaining: toSafeNumber(flexTimeDays) - flexTimeUsed,
+            },
+            {
+              label: "Birthday day",
+              available: toSafeNumber(birthdayDays),
+              used: birthdayUsedAmount,
+              remaining: toSafeNumber(birthdayDays) - birthdayUsedAmount,
+            },
+            {
+              label: "Bonus days",
+              available: toSafeNumber(bonusDays),
+              used: bonusUsed,
+              remaining: toSafeNumber(bonusDays) - bonusUsed,
+            },
+          ];
+        }, [
+          countedDateList,
+          selectedDates,
+          baseDays,
+          birthdayDays,
+          bonusDays,
+          carryOverDays,
+          flexTimeDays,
+        ]);
 
         const remainingDays = totalAvailable - daysUsed;
 
@@ -768,11 +870,12 @@
                     </div>
                     <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">Vacation Control Calendar</h1>
                     <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300 md:text-base">
-                      Select vacation, birthday, bonus and holiday days directly on the calendar and instantly see the impact on your yearly balance.
+                      Select vacation, flex time, birthday, bonus and holiday days directly on the calendar and instantly see the impact on your yearly balance.
                     </p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <p className="inline-flex rounded-full bg-emerald-400/10 px-3 py-1 text-xs font-medium text-emerald-200 ring-1 ring-emerald-300/20">Auto-save enabled</p>
                       <p className="inline-flex rounded-full bg-blue-400/10 px-3 py-1 text-xs font-medium text-blue-200 ring-1 ring-blue-300/20">Full JSON backup</p>
+                      <p className="inline-flex rounded-full bg-orange-400/10 px-3 py-1 text-xs font-medium text-orange-200 ring-1 ring-orange-300/20">Flex time included</p>
                       <p className="inline-flex rounded-full bg-purple-400/10 px-3 py-1 text-xs font-medium text-purple-200 ring-1 ring-purple-300/20">Birthday locked to 1 day</p>
                       <p className="inline-flex rounded-full bg-amber-400/10 px-3 py-1 text-xs font-medium text-amber-200 ring-1 ring-amber-300/20">Manual holidays</p>
                     </div>
@@ -809,6 +912,7 @@
                       <div className="grid gap-2">
                         <ChoiceButton active={selectedDayType === DAY_TYPES.VACATION_FULL} color="blue" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.VACATION_FULL })}>Vacation full day · 1 day</ChoiceButton>
                         <ChoiceButton active={selectedDayType === DAY_TYPES.VACATION_HALF} color="cyan" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.VACATION_HALF })}>Vacation half day · 0.5 day</ChoiceButton>
+                        <ChoiceButton active={selectedDayType === DAY_TYPES.FLEX_TIME} color="orange" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.FLEX_TIME })}>Flex time · 1 day</ChoiceButton>
                         <ChoiceButton active={selectedDayType === DAY_TYPES.BIRTHDAY} color="purple" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.BIRTHDAY })}>Birthday day · locked to 1 per year</ChoiceButton>
                         <ChoiceButton active={selectedDayType === DAY_TYPES.BONUS} color="emerald" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.BONUS })}>Bonus day · 1 day</ChoiceButton>
                         <ChoiceButton active={selectedDayType === DAY_TYPES.HOLIDAY} color="amber" onClick={() => updatePlannerState({ selectedDayType: DAY_TYPES.HOLIDAY })}>National / Local holiday · does not reduce balance</ChoiceButton>
@@ -837,13 +941,19 @@
                         <AllowanceInput label="Birthday day" value={birthdayDays} max={1} onChange={handleNumericInput("birthdayDays")} />
                         <AllowanceInput label="Bonus days" value={bonusDays} onChange={handleNumericInput("bonusDays")} />
                         <AllowanceInput label="Carry-over from last year" value={carryOverDays} onChange={handleNumericInput("carryOverDays")} />
+                        <AllowanceInput label="Flex time days" value={flexTimeDays} onChange={handleNumericInput("flexTimeDays")} />
                       </div>
                       <div className="rounded-2xl bg-slate-100 p-4">
                         <div className="flex items-start gap-3">
                           <span className="mt-0.5 text-lg">ℹ️</span>
                           <div>
                             <p className="text-sm font-medium">Current setup for {year}</p>
-                            <p className="mt-1 text-sm text-slate-600">{baseDays} base + {birthdayDays} birthday + {bonusDays} bonus + {carryOverDays} carry-over = {formatAmount(totalAvailable)} total days.</p>
+                            <p className="mt-1 text-sm text-slate-600">
+                              {baseDays} base + {carryOverDays} carry-over + {flexTimeDays} flex time + {birthdayDays} birthday + {bonusDays} bonus = {formatAmount(totalAvailable)} total days.
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              Balance split assumes vacation days use carry-over first, then this year vacation.
+                            </p>
                           </div>
                         </div>
                       </div>
@@ -865,7 +975,7 @@
                         <input type="checkbox" checked={excludeWeekends} onChange={(event) => toggleExcludeWeekends(event.target.checked)} className="h-5 w-5 accent-slate-900" />
                       </label>
                       <p className="rounded-2xl bg-slate-100 p-4 text-xs text-slate-600">
-                        Holidays are now added manually through the “Day to add” section. Use the National / Local holiday type for public, local or company non-working days.
+                        Holidays are added manually through the “Day to add” section. Use the National / Local holiday type for public, local or company non-working days.
                       </p>
                       <button onClick={clearCalendarForCurrentYear} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">↺ Clear selected days for {year}</button>
                       <button onClick={resetEverything} className="w-full rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 transition hover:bg-red-100">Reset everything</button>
@@ -876,9 +986,25 @@
                     <div className="space-y-4 p-5">
                       <div>
                         <h2 className="text-lg font-semibold">Summary for {year}</h2>
-                        <p className="mt-1 text-sm text-slate-500">Quick overview by type and by month.</p>
+                        <p className="mt-1 text-sm text-slate-500">Quick overview by balance category, type and month.</p>
                       </div>
+
+                      <div className="space-y-2">
+                        <h3 className="text-sm font-semibold text-slate-700">Balance by category</h3>
+                        {categoryBalanceRows.map((row) => (
+                          <CategoryBalanceRow
+                            key={row.label}
+                            label={row.label}
+                            available={row.available}
+                            used={row.used}
+                            remaining={row.remaining}
+                            note={row.note}
+                          />
+                        ))}
+                      </div>
+
                       <div className="space-y-2 text-sm">
+                        <h3 className="pt-2 text-sm font-semibold text-slate-700">Selected days by type</h3>
                         {Object.keys(yearlyTypeSummary).length === 0 ? (
                           <p className="rounded-2xl bg-slate-100 p-4 text-slate-500">No selected days yet.</p>
                         ) : (
@@ -890,17 +1016,23 @@
                           ))
                         )}
                       </div>
+
                       <div className="space-y-2 text-sm">
-                        {monthlySummary.map((row) => (
-                          <div key={row.monthName} className="flex justify-between rounded-xl bg-blue-50 px-3 py-2 text-blue-950">
-                            <span>{row.monthName}</span>
-                            <span className="font-semibold">
-                              {row.amount > 0 ? `${formatAmount(row.amount)} day(s)` : ""}
-                              {row.amount > 0 && row.holidays > 0 ? " · " : ""}
-                              {row.holidays > 0 ? `${row.holidays} holiday(s)` : ""}
-                            </span>
-                          </div>
-                        ))}
+                        <h3 className="pt-2 text-sm font-semibold text-slate-700">Selected days by month</h3>
+                        {monthlySummary.length === 0 ? (
+                          <p className="rounded-2xl bg-slate-100 p-4 text-slate-500">No monthly activity yet.</p>
+                        ) : (
+                          monthlySummary.map((row) => (
+                            <div key={row.monthName} className="flex justify-between rounded-xl bg-blue-50 px-3 py-2 text-blue-950">
+                              <span>{row.monthName}</span>
+                              <span className="font-semibold">
+                                {row.amount > 0 ? `${formatAmount(row.amount)} day(s)` : ""}
+                                {row.amount > 0 && row.holidays > 0 ? " · " : ""}
+                                {row.holidays > 0 ? `${row.holidays} holiday(s)` : ""}
+                              </span>
+                            </div>
+                          ))
+                        )}
                       </div>
                     </div>
                   </Panel>
